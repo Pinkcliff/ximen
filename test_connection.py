@@ -51,10 +51,10 @@ def test_plc_connection(ip_address="192.168.0.1", rack=0, slot=1):
 
         # 3. 检查连接状态
         print("\n3. 检查连接状态...")
-        if client.connected == 1:
+        if client.Connected == 1:
             print("✅ 连接状态: 已连接")
         else:
-            print(f"❌ 连接状态: {client.connected}")
+            print(f"❌ 连接状态: {client.Connected}")
             return False
 
         # 4. 读取 PLC 信息
@@ -105,7 +105,7 @@ def test_plc_connection(ip_address="192.168.0.1", rack=0, slot=1):
         return False
     finally:
         try:
-            if client.connected == 1:
+            if client.Connected == 1:
                 client.disconnect()
                 print("\n✅ 连接已断开")
         except:
