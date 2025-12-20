@@ -64,13 +64,19 @@ def test_plc_connection(ip_address="192.168.0.1", rack=0, slot=1):
             status = client.get_cpu_state()
             print(f"   CPU 状态: {status}")
 
-            # 获取 PLC 类型
-            order_number = client.get_order_number()
-            print(f"   PLC 型号: {order_number}")
+            # 获取 PLC 订单号
+            try:
+                order_number = client.GetOrderNumber()
+                print(f"   PLC 型号: {order_number}")
+            except:
+                print(f"   PLC 型号: 无法获取")
 
-            # 获取模块信息
-            module_type = client.get_module_type()
-            print(f"   模块类型: {module_type}")
+            # 获取模块类型
+            try:
+                module_type = client.GetModuleType()
+                print(f"   模块类型: {module_type}")
+            except:
+                print(f"   模块类型: 无法获取")
 
         except Exception as e:
             print(f"❌ 读取 PLC 信息失败: {e}")
