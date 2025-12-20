@@ -11,7 +11,7 @@ plc:
 # DB5 编码器位置数据配置
 data:
   db_number: 5                  # 数据块编号
-  offset: 20                    # 编码器位置偏移地址(字节)
+  offset: 124                   # 编码器位置偏移地址(字节) - 根据图片信息更新
   data_type: "REAL"             # 数据类型
   data_size: 4                  # 数据大小(字节) - REAL 占用4字节
 

@@ -25,7 +25,7 @@ def load_config():
             },
             'data': {
                 'db_number': 5,
-                'offset': 20,
+                'offset': 124,  # 根据图片信息，偏移量为124
                 'data_size': 4
             }
         }
@@ -46,13 +46,14 @@ def read_encoder_position():
 
     try:
         # 连接 PLC
-        result = client.connect(
+        client.connect(
             plc_config['ip_address'],
             plc_config['rack'],
             plc_config['slot']
         )
 
-        if result == 0:
+        # 检查连接状态
+        if client.connected == 1:
             print("✅ PLC 连接成功")
 
             # 读取数据
@@ -71,7 +72,10 @@ def read_encoder_position():
             return position
 
         else:
-            print(f"❌ PLC 连接失败，错误代码: {result}")
+            print(f"❌ PLC 连接失败，连接状态: {client.connected}")
+            # 获取详细错误信息
+            error_code = client.error_text()
+            print(f"❌ 错误信息: {error_code}")
             return None
 
     except Exception as e:

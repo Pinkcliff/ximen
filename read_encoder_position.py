@@ -45,11 +45,10 @@ class EncoderPositionReader:
         self.client = snap7.client.Client()
         self.is_connected = False
 
-        # DB5 配置 - 需要根据实际情况调整
-        # 注意：DB5.Static 最后一个 Real 类型的偏移地址需要您确认
-        # 这里假设偏移地址为 20 (示例值，您需要根据实际情况修改)
+        # DB5 配置 - 根据图片信息更新
+        # 右缸编码器反馈位置在 DB5 偏移量 124.0 处
         self.db_number = 5
-        self.encoder_offset = 20  # 请根据实际地址修改此值
+        self.encoder_offset = 124  # 根据图片信息，偏移量为124
         self.data_size = 4  # Real 类型占用 4 字节
 
         logger.info(f"编码器位置读取器初始化完成")
@@ -61,15 +60,19 @@ class EncoderPositionReader:
         """连接到 PLC"""
         try:
             logger.info(f"正在连接 PLC: {self.plc_ip}")
-            result = self.client.connect(self.plc_ip, self.rack, self.slot)
+            self.client.connect(self.plc_ip, self.rack, self.slot)
 
-            if result == 0:
+            # 检查连接状态
+            if self.client.connected == 1:
                 self.is_connected = True
                 logger.success("PLC 连接成功")
                 return True
             else:
-                error_msg = f"PLC 连接失败，错误代码: {result}"
+                error_msg = f"PLC 连接失败，连接状态: {self.client.connected}"
                 logger.error(error_msg)
+                # 获取详细错误信息
+                error_text = self.client.error_text()
+                logger.error(f"错误信息: {error_text}")
                 return False
 
         except Exception as e:
