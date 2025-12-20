@@ -1,0 +1,48 @@
+# 右缸编码器位置读取配置文件
+# 保存为 encoder_config.yaml
+
+# PLC 连接配置
+plc:
+  ip_address: "192.168.0.1"    # PLC IP 地址
+  rack: 0                       # 机架号
+  slot: 1                       # 槽位号
+  timeout: 10                   # 连接超时时间(秒)
+
+# DB5 编码器位置数据配置
+data:
+  db_number: 5                  # 数据块编号
+  offset: 20                    # 编码器位置偏移地址(字节)
+  data_type: "REAL"             # 数据类型
+  data_size: 4                  # 数据大小(字节) - REAL 占用4字节
+
+  # 数据验证范围
+  min_value: -1000.0           # 最小值(mm)
+  max_value: 1000.0            # 最大值(mm)
+
+# 监控配置
+monitoring:
+  enable_logging: true         # 启用日志记录
+  log_file: "encoder_position.log"  # 日志文件名
+
+  # 连续监控设置
+  interval: 1.0               # 读取间隔(秒)
+  max_retries: 3              # 最大重试次数
+  retry_delay: 1.0            # 重试延迟(秒)
+
+  # 数据保存设置
+  save_to_file: false         # 是否保存到文件
+  data_file: "encoder_data.csv"  # 数据文件名
+
+# 调试选项
+debug:
+  show_raw_data: true         # 显示原始字节数据
+  show_hex_dump: true         # 显示十六进制数据
+  validate_data: true         # 验证数据合理性
+
+# 偏移地址测试配置（用于调试）
+test_offsets:
+  - 16   # DB5.DBW16
+  - 20   # DB5.DBW20
+  - 24   # DB5.DBW24
+  - 28   # DB5.DBW28
+  - 32   # DB5.DBW32
