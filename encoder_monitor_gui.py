@@ -294,6 +294,7 @@ class EncoderMonitorGUI(QMainWindow):
 
         layout.addLayout(threshold_layout)
 
+        # 添加垂直拉伸
         layout.addStretch()
         return group
 
@@ -338,7 +339,8 @@ class EncoderMonitorGUI(QMainWindow):
         self.runtime_label.setStyleSheet("font-weight: bold;")
         layout.addWidget(self.runtime_label, 5, 1)
 
-        layout.addStretch()
+        # 添加垂直拉伸
+        layout.setRowStretch(6, 1)
         return group
 
     def create_log_panel(self):

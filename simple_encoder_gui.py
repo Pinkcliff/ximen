@@ -373,7 +373,8 @@ class SimpleEncoderGUI(QMainWindow):
         self.runtime_label = QLabel("00:00:00")
         layout.addWidget(self.runtime_label, 4, 1)
 
-        layout.addStretch()
+        # 添加垂直拉伸
+        layout.setRowStretch(5, 1)
         return group
 
     def create_log_widget(self):
