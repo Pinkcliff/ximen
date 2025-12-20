@@ -86,3 +86,16 @@
 据。
 
   请运行这两个脚本并告诉我结果！
+
+   现在您可以测试了！
+
+  请在您的测试电脑上运行以下任一脚本：
+
+  # 1. 快速读取测试
+  python quick_read_encoder.py
+
+  # 2. 连接测试
+  python test_connection.py
+
+  # 3. 简单读取测试
+  python simple_read_test.py

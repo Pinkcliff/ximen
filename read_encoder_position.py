@@ -63,12 +63,12 @@ class EncoderPositionReader:
             self.client.connect(self.plc_ip, self.rack, self.slot)
 
             # 检查连接状态
-            if self.client.Connected == 1:
+            if self.client.get_connected():
                 self.is_connected = True
                 logger.success("PLC 连接成功")
                 return True
             else:
-                error_msg = f"PLC 连接失败，连接状态: {self.client.Connected}"
+                error_msg = f"PLC 连接失败，连接状态: {self.client.get_connected()}"
                 logger.error(error_msg)
                 # 获取详细错误信息
                 error_text = self.client.ErrorText()
@@ -81,7 +81,7 @@ class EncoderPositionReader:
 
     def disconnect(self):
         """断开 PLC 连接"""
-        if self.is_connected:
+        if self.is_connected and self.client.get_connected():
             try:
                 self.client.disconnect()
                 self.is_connected = False

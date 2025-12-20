@@ -31,9 +31,9 @@ def test_plc_connect():
         client.connect('192.168.0.1', 0, 1)
 
         # 3. 检查连接状态
-        print(f"\n连接状态: {client.Connected}")
+        print(f"\n连接状态: {client.get_connected()}")
 
-        if client.Connected == 1:
+        if client.get_connected():
             print("✅ PLC 连接成功！")
 
             # 4. 尝试读取一些基本信息
@@ -78,7 +78,7 @@ def test_plc_connect():
     finally:
         # 断开连接
         try:
-            if client.Connected == 1:
+            if client.get_connected():
                 client.disconnect()
                 print("\n连接已断开")
         except:
