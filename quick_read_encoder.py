@@ -53,7 +53,7 @@ def read_encoder_position():
         )
 
         # 检查连接状态
-        if client.connected == 1:
+        if client.Connected == 1:
             print("✅ PLC 连接成功")
 
             # 读取数据
@@ -72,9 +72,9 @@ def read_encoder_position():
             return position
 
         else:
-            print(f"❌ PLC 连接失败，连接状态: {client.connected}")
+            print(f"❌ PLC 连接失败，连接状态: {client.Connected}")
             # 获取详细错误信息
-            error_code = client.error_text()
+            error_code = client.ErrorText()
             print(f"❌ 错误信息: {error_code}")
             return None
 
