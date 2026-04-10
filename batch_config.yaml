@@ -1,0 +1,29 @@
+# PLC点位表批量读取配置文件
+
+# PLC连接配置
+plc:
+  ip_address: "192.168.0.1"    # PLC IP地址 - 请修改为实际IP
+  rack: 0                       # 机架号
+  slot: 1                       # 槽位号
+  timeout: 10                   # 连接超时(秒)
+
+# 点位表文件
+point_table:
+  file: "点位表.xlsx"           # 点位表Excel文件路径
+
+# 读取选项
+reading:
+  batch_by_db: true             # 按DB块分组批量读取(提高效率)
+  retry_on_error: true          # 读取失败时重试
+  max_retries: 3                # 最大重试次数
+
+# 显示选项
+display:
+  show_raw_data: false          # 显示原始数据
+  show_hex_dump: false          # 显示十六进制数据
+  show_statistics: true         # 显示统计信息
+
+# 日志配置
+logging:
+  level: "INFO"                 # 日志级别: DEBUG, INFO, WARNING, ERROR
+  log_file: "batch_read.log"    # 日志文件
