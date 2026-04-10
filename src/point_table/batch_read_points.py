@@ -4,6 +4,12 @@
 根据点位表批量读取PLC数据
 """
 
+import os
+from pathlib import Path
+
+# 获取项目根目录
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+
 import pandas as pd
 import snap7
 from snap7.util import *
@@ -250,7 +256,7 @@ def main():
 
     # 创建读取器
     reader = PointTableReader(
-        excel_file="点位表.xlsx",
+        excel_file=str(PROJECT_ROOT / "data" / "点位表.xlsx"),
         plc_ip="192.168.0.1",  # 修改为实际PLC IP
         rack=0,
         slot=1

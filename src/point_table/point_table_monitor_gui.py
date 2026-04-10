@@ -6,6 +6,11 @@
 """
 
 import sys
+from pathlib import Path
+
+# 获取项目根目录
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+
 import pandas as pd
 import snap7
 from snap7.util import *
@@ -280,7 +285,7 @@ class PointTableMonitor(QMainWindow):
     def load_point_table(self):
         """加载点位表"""
         try:
-            df = pd.read_excel('点位表.xlsx')
+            df = pd.read_excel(PROJECT_ROOT / 'data' / '点位表.xlsx')
 
             for idx, row in df.iterrows():
                 name = str(row.iloc[0]) if pd.notna(row.iloc[0]) else ""

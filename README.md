@@ -1,74 +1,65 @@
-# PLC点位表可视化监控
+# 西门子 S7 PLC 编码器监控项目
 
-## 📊 功能介绍
+基于 Python 的西门子 PLC S7 协议通信项目，用于读取和监控编码器位置数据。
 
-可视化监控程序，实时显示PLC所有点位数据。
+## 📁 项目结构
 
-### 界面功能
+```
+ximen/
+├── src/                    # 源代码
+│   ├── encoders/          # 编码器相关程序
+│   ├── point_table/       # 点位表监控程序
+│   └── utils/             # 工具和测试脚本
+├── config/                # 配置文件
+├── scripts/               # 安装脚本
+├── docs/                  # 文档
+├── data/                  # 数据文件
+└── backup/                # 备份文件夹
+```
 
-- ✅ **控制面板** - 连接/断开PLC、开始/停止监控
-- ✅ **数据表格** - 显示所有点位的详细信息
-- ✅ **实时刷新** - 1秒间隔自动更新
-- ✅ **统计信息** - 显示总点数、成功/失败数量
-- ✅ **状态指示** - BOOL类型用颜色表示True/False
-- ✅ **暗色主题** - 护眼的现代化界面
-
-### 支持的数据类型
-
-- REAL - 浮点数（蓝色背景）
-- BOOL - 布尔值（绿色=True，灰色=False）
-- INT/DINT - 整数
-- WORD/DWORD - 字数据
-
-## 🚀 使用方法
+## 🚀 快速开始
 
 ### 1. 安装依赖
 
 ```bash
 # Windows
-install_gui_monitor.bat
-
-# 或手动安装
-pip install python-snap7 PyQt6 pandas openpyxl loguru pyyaml
+scripts\install_requirements.bat
 ```
 
-### 2. 修改PLC配置
+### 2. 运行程序
 
-编辑 `point_table_monitor_gui.py`，修改PLC IP地址：
-
-```python
-self.client.connect("192.168.0.1", 0, 1)  # 修改为实际IP
-```
-
-### 3. 运行程序
-
+**点位表可视化监控（推荐）**：
 ```bash
-python point_table_monitor_gui.py
+python src/point_table/point_table_monitor_gui.py
 ```
 
-### 4. 操作说明
+**编码器位置读取**：
+```bash
+python src/encoders/read_encoder_position.py
+```
 
-1. 点击 **"连接PLC"** - 连接到PLC
-2. 点击 **"开始监控"** - 开始实时刷新数据
-3. 点击 **"单次刷新"** - 手动刷新一次数据
-4. 点击 **"清除数据"** - 清除表格显示
+## 📚 文档
 
-## 📁 相关文件
+详细使用说明请查看 [docs/README.md](docs/README.md)
 
-- `point_table_monitor_gui.py` - GUI监控程序
-- `batch_read_points.py` - 批量读取命令行程序
-- `点位表.xlsx` - 点位表数据
-- `batch_config.yaml` - 配置文件
+## 🔧 配置
 
-## 🔧 点位表格式
+- **编码器配置**: `config/encoder_config.yaml`
+- **点位表配置**: `config/batch_config.yaml`
+- **点位表数据**: `data/点位表.xlsx`
 
-点位表Excel文件格式：
+## 📝 主要功能
 
-| 名称 | 地址 | 数据类型 |
-|------|------|----------|
-| 台板速度反馈 | DB6.12.0 | REAL |
-| 台板使能接通 | DB5.0.0 | BOOL |
+- ✅ S7 协议 PLC 通信
+- ✅ 编码器位置实时读取
+- ✅ 点位表批量数据监控
+- ✅ 可视化 GUI 界面
+- ✅ 支持多种数据类型（REAL, BOOL, INT, DINT）
 
-地址格式：`DB块号.字节偏移.位偏移`
+## 🛠️ 技术栈
 
-例如：`DB5.128.0` 表示 DB5 数据块，偏移 128 字节，第 0 位
+- Python 3.11+
+- python-snap7 (S7 通信)
+- PyQt6 (GUI 界面)
+- pandas (数据处理)
+- openpyxl (Excel 读取)

@@ -1,8 +1,12 @@
 import pandas as pd
 import openpyxl
+from pathlib import Path
+
+# 获取项目根目录
+PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 # 读取Excel文件
-df = pd.read_excel('点位表.xlsx')
+df = pd.read_excel(PROJECT_ROOT / 'data' / '点位表.xlsx')
 
 print("=" * 60)
 print("点位表内容:")

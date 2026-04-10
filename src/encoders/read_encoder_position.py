@@ -8,9 +8,13 @@
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 from loguru import logger
 import snap7
 from snap7.util import get_real
+
+# 获取项目根目录
+PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 # 配置日志
 logger.remove()
@@ -20,7 +24,7 @@ logger.add(
     level="INFO"
 )
 logger.add(
-    "encoder_position.log",
+    PROJECT_ROOT / "data" / "encoder_position.log",
     rotation="10 MB",
     retention="7 days",
     format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}",

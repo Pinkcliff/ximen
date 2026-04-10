@@ -9,9 +9,12 @@ from snap7.util import get_real
 import yaml
 from pathlib import Path
 
+# 获取项目根目录
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+
 def load_config():
     """加载配置文件"""
-    config_file = Path("encoder_config.yaml")
+    config_file = PROJECT_ROOT / "config" / "encoder_config.yaml"
     if config_file.exists():
         with open(config_file, 'r', encoding='utf-8') as f:
             return yaml.safe_load(f)
