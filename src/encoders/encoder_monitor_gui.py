@@ -178,15 +178,13 @@ class EncoderMonitorGUI(QMainWindow):
         group = QGroupBox("右缸编码器当前位置")
         layout = QVBoxLayout()
 
-        # 当前位置 - 使用 LCD 数字显示
         self.position_lcd = QLCDNumber()
         self.position_lcd.setDigitCount(10)
         self.position_lcd.setFixedSize(300, 100)
         self.position_lcd.setStyleSheet("""
             QLCDNumber {
-                background-color: #2E3440;
-                color: #88C0D0;
-                border: 2px solid #4C566A;
+                background-color: #f0f0f0;
+                border: 2px solid #bbb;
                 border-radius: 5px;
             }
         """)
@@ -215,13 +213,13 @@ class EncoderMonitorGUI(QMainWindow):
 
         # 创建 pyqtgraph 绘图组件
         self.plot_widget = pg.PlotWidget()
-        self.plot_widget.setBackground("#2E3440")
+        self.plot_widget.setBackground("w")
         self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
         self.plot_widget.setLabel('left', '位置', units='mm', color='#D8DEE9')
         self.plot_widget.setLabel('bottom', '时间', units='s', color='#D8DEE9')
 
         # 创建曲线
-        self.plot_curve = self.plot_widget.plot(pen=pg.mkPen(color='#88C0D0', width=2))
+        self.plot_curve = self.plot_widget.plot(pen=pg.mkPen(color='#2196F3', width=2))
 
         # 设置坐标轴范围
         self.plot_widget.setXRange(0, 60)  # 显示最近60秒
@@ -240,7 +238,7 @@ class EncoderMonitorGUI(QMainWindow):
         self.start_btn = QPushButton("开始监控")
         self.start_btn.setStyleSheet("""
             QPushButton {
-                background-color: #5E81AC;
+                background-color: #2196F3;
                 color: white;
                 font-size: 16px;
                 font-weight: bold;
@@ -248,7 +246,7 @@ class EncoderMonitorGUI(QMainWindow):
                 border-radius: 5px;
             }
             QPushButton:hover {
-                background-color: #81A1C1;
+                background-color: #1976D2;
             }
         """)
         self.start_btn.clicked.connect(self.toggle_monitoring)
@@ -258,7 +256,7 @@ class EncoderMonitorGUI(QMainWindow):
         clear_btn = QPushButton("清除历史数据")
         clear_btn.setStyleSheet("""
             QPushButton {
-                background-color: #BF616A;
+                background-color: #f44336;
                 color: white;
                 padding: 8px;
                 border-radius: 5px;

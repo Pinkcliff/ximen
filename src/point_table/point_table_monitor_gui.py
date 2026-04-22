@@ -1,35 +1,44 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-点位表可视化监控程序
-实时显示PLC所有点位数据
+点位表可视化监控程序 v2
+仅读取PLC数据，分组布局，后台线程通信，数据变化变色闪烁
 """
 
 import sys
+import time
 from pathlib import Path
+from datetime import datetime
 
-# 获取项目根目录
-PROJECT_ROOT = Path(__file__).parent.parent.parent
+if getattr(sys, 'frozen', False):
+    PROJECT_ROOT = Path(sys._MEIPASS)
+else:
+    PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 import pandas as pd
 import snap7
 from snap7.util import *
 import re
-from dataclasses import dataclass
-from typing import Dict, List, Optional
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-                             QHBoxLayout, QTableWidget, QTableWidgetItem,
-                             QPushButton, QLabel, QGroupBox, QScrollArea,
-                             QStatusBar, QHeaderView, QSplitter)
-from PyQt6.QtCore import QTimer, Qt
-from PyQt6.QtGui import QColor, QFont
-from loguru import logger
 import yaml
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QTableWidget, QTableWidgetItem, QPushButton, QLabel,
+    QListWidget, QListWidgetItem, QStatusBar, QHeaderView, QSplitter,
+    QDoubleSpinBox, QMessageBox, QFrame,
+)
+from PyQt5.QtCore import QTimer, Qt, QThread, pyqtSignal
+from PyQt5.QtGui import QColor
+from loguru import logger
 
+
+# ---------------------------------------------------------------------------
+#  Data Model
+# ---------------------------------------------------------------------------
 
 @dataclass
 class PointInfo:
-    """点位信息"""
     name: str
     db_number: int
     byte_offset: int
@@ -37,501 +46,621 @@ class PointInfo:
     data_type: str = "REAL"
     size: int = 4
 
+    _SIZES = {"REAL": 4, "BOOL": 1, "INT": 2, "DINT": 4, "WORD": 2, "DWORD": 4}
+
     @classmethod
-    def from_address(cls, name: str, address: str, data_type: str) -> 'PointInfo':
-        """从地址字符串解析点位信息"""
-        match = re.match(r'DB(\d+)\.(\d+)\.(\d+)', address)
-        if not match:
+    def from_address(cls, name: str, address: str, data_type: str) -> "PointInfo":
+        m = re.match(r"DB(\d+)\.(\d+)\.(\d+)", address)
+        if not m:
             raise ValueError(f"无效的地址格式: {address}")
+        return cls(
+            name=name,
+            db_number=int(m.group(1)),
+            byte_offset=int(m.group(2)),
+            bit_offset=int(m.group(3)),
+            data_type=data_type,
+            size=cls._SIZES.get(data_type, 4),
+        )
 
-        db_num = int(match.group(1))
-        byte_off = int(match.group(2))
-        bit_off = int(match.group(3))
+    @property
+    def address(self) -> str:
+        return f"DB{self.db_number}.{self.byte_offset}.{self.bit_offset}"
 
-        if data_type == "REAL":
-            size = 4
-        elif data_type == "BOOL":
-            size = 1
-        elif data_type == "INT":
-            size = 2
-        elif data_type == "DINT":
-            size = 4
+
+# ---------------------------------------------------------------------------
+#  Background PLC Reader
+# ---------------------------------------------------------------------------
+
+class PLCReader(QThread):
+    """后台PLC读取线程，支持持续监控和单次刷新"""
+
+    data_ready = pyqtSignal(dict, int, int)  # {db_num: {name: val}}, ok, fail
+    connection_status = pyqtSignal(bool, str)  # connected, msg
+
+    def __init__(
+        self,
+        plc_ip: str,
+        rack: int,
+        slot: int,
+        points: List[PointInfo],
+        refresh_interval: float = 1.0,
+        single_shot: bool = False,
+    ):
+        super().__init__()
+        self.plc_ip = plc_ip
+        self.rack = rack
+        self.slot = slot
+        self.points = points
+        self.refresh_interval = refresh_interval
+        self.single_shot = single_shot
+        self._client: Optional[snap7.client.Client] = None
+        self._running = False
+
+    # -- thread entry --
+
+    def run(self):
+        self._running = True
+
+        try:
+            self._client = snap7.client.Client()
+            self._client.connect(self.plc_ip, self.rack, self.slot)
+            self.connection_status.emit(True, f"已连接 {self.plc_ip}")
+        except Exception as e:
+            self.connection_status.emit(False, str(e))
+            return
+
+        if self.single_shot:
+            res, s, f = self._read_all()
+            self.data_ready.emit(res, s, f)
         else:
-            size = 4
+            while self._running:
+                res, s, f = self._read_all()
+                if self._running:
+                    self.data_ready.emit(res, s, f)
+                t = 0.0
+                while t < self.refresh_interval and self._running:
+                    time.sleep(0.05)
+                    t += 0.05
 
-        return cls(name=name, db_number=db_num, byte_offset=byte_off,
-                  bit_offset=bit_off, data_type=data_type, size=size)
+        try:
+            if self._client:
+                self._client.disconnect()
+        except Exception:
+            pass
+        self.connection_status.emit(False, "已断开连接")
 
+    def stop(self):
+        self._running = False
+
+    # -- internal --
+
+    def _read_all(self) -> Tuple[Dict[int, Dict[str, any]], int, int]:
+        if not self._client:
+            return {}, 0, 0
+
+        groups: Dict[int, List[PointInfo]] = {}
+        for p in self.points:
+            groups.setdefault(p.db_number, []).append(p)
+
+        results: Dict[int, Dict[str, any]] = {}
+        ok = fail = 0
+
+        for db, pts in groups.items():
+            max_off = max(p.byte_offset + p.size for p in pts)
+            try:
+                raw = self._client.db_read(db, 0, max_off)
+                vals = {}
+                for p in pts:
+                    try:
+                        vals[p.name] = self._parse(raw, p)
+                        ok += 1
+                    except Exception:
+                        vals[p.name] = None
+                        fail += 1
+                results[db] = vals
+            except Exception:
+                results[db] = {p.name: None for p in pts}
+                fail += len(pts)
+
+        return results, ok, fail
+
+    @staticmethod
+    def _parse(data: bytes, p: PointInfo):
+        if p.data_type == "REAL":
+            return get_real(data, p.byte_offset)
+        if p.data_type == "BOOL":
+            return get_bool(data, p.byte_offset, p.bit_offset)
+        if p.data_type == "INT":
+            return get_int(data, p.byte_offset)
+        if p.data_type == "DINT":
+            return get_dint(data, p.byte_offset)
+        if p.data_type == "WORD":
+            return get_word(data, p.byte_offset)
+        if p.data_type == "DWORD":
+            return get_dword(data, p.byte_offset)
+        return None
+
+
+class _ConnectTester(QThread):
+    """异步连接测试线程"""
+
+    result = pyqtSignal(bool, str)
+
+    def __init__(self, ip: str, rack: int, slot: int):
+        super().__init__()
+        self.ip = ip
+        self.rack = rack
+        self.slot = slot
+
+    def run(self):
+        try:
+            c = snap7.client.Client()
+            c.connect(self.ip, self.rack, self.slot)
+            c.disconnect()
+            self.result.emit(True, f"已连接 {self.ip}")
+        except Exception as e:
+            self.result.emit(False, str(e))
+
+
+# ---------------------------------------------------------------------------
+#  Styles
+# ---------------------------------------------------------------------------
+
+FLASH_MS = 600
+CLR_UP = QColor(200, 245, 200)
+CLR_DOWN = QColor(245, 200, 200)
+CLR_FAIL = QColor(230, 230, 230)
+CLR_CLEAR = QColor(0, 0, 0, 0)
+
+
+def _btn_style(normal: str, hover: str) -> str:
+    return f"QPushButton {{ background: {normal}; color: white; padding: 6px 14px; border: none; border-radius: 4px; font-weight: bold; font-size: 13px; }} QPushButton:hover {{ background: {hover}; }} QPushButton:disabled {{ background: #bbb; color: #666; }}"
+
+
+BTN_GREEN = _btn_style("#4CAF50", "#45a049")
+BTN_RED = _btn_style("#f44336", "#da190b")
+BTN_BLUE = _btn_style("#2196F3", "#0b7dda")
+BTN_ORANGE = _btn_style("#FF9800", "#e68900")
+
+
+# ---------------------------------------------------------------------------
+#  Main Window
+# ---------------------------------------------------------------------------
 
 class PointTableMonitor(QMainWindow):
-    """点位表监控主窗口"""
-
     def __init__(self):
         super().__init__()
         self.points: List[PointInfo] = []
-        self.client = snap7.client.Client()
+        self.db_groups: Dict[int, List[PointInfo]] = {}
+        self.prev_values: Dict[str, any] = {}
+        self._flash_timers: Dict[int, QTimer] = {}
+        self.reader: Optional[PLCReader] = None
+        self._single_reader: Optional[PLCReader] = None
+        self._connect_tester: Optional[_ConnectTester] = None
         self.is_connected = False
         self.is_monitoring = False
-        self.data_cache: Dict[str, any] = {}
+        self.selected_db: Optional[int] = None
+        self.config: dict = {}
 
-        # 统计信息
-        self.stats = {
-            'total': 0,
-            'success': 0,
-            'failed': 0,
-            'real_count': 0,
-            'bool_count': 0
-        }
+        self._load_config()
+        self._load_points()
+        self._build_ui()
 
-        self.init_ui()
-        self.load_point_table()
+    # ---- config / data ----
 
-    def init_ui(self):
-        """初始化界面"""
-        self.setWindowTitle("PLC点位表可视化监控")
-        self.setGeometry(100, 100, 1200, 800)
-
-        # 创建中央部件
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-
-        # 主布局
-        main_layout = QVBoxLayout(central_widget)
-
-        # 控制面板
-        control_panel = self.create_control_panel()
-        main_layout.addWidget(control_panel)
-
-        # 统计信息面板
-        stats_panel = self.create_stats_panel()
-        main_layout.addWidget(stats_panel)
-
-        # 数据表格
-        self.table = QTableWidget()
-        self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(["序号", "点位名称", "地址", "数据类型", "当前值"])
-
-        # 设置表格样式
-        self.table.setStyleSheet("""
-            QTableWidget {
-                gridline-color: #444;
-                background-color: #1e1e1e;
-                alternate-background-color: #252525;
-            }
-            QTableWidget::item {
-                padding: 5px;
-                border: none;
-            }
-            QHeaderView::section {
-                background-color: #3c3c3c;
-                color: white;
-                padding: 8px;
-                border: 1px solid #555;
-                font-weight: bold;
-            }
-        """)
-
-        # 设置列宽
-        header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-
-        # 设置行高
-        self.table.verticalHeader().setDefaultSectionSize(30)
-
-        main_layout.addWidget(self.table)
-
-        # 状态栏
-        self.status_bar = QStatusBar()
-        self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage("就绪")
-
-        # 定时器
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.update_data)
-
-    def create_control_panel(self):
-        """创建控制面板"""
-        group = QGroupBox("控制面板")
-        layout = QHBoxLayout()
-
-        # 连接按钮
-        self.connect_btn = QPushButton("连接PLC")
-        self.connect_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50;
-                color: white;
-                padding: 8px 16px;
-                border: none;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
-            QPushButton:pressed {
-                background-color: #3d8b40;
-            }
-        """)
-        self.connect_btn.clicked.connect(self.toggle_connection)
-        layout.addWidget(self.connect_btn)
-
-        # 开始监控按钮
-        self.monitor_btn = QPushButton("开始监控")
-        self.monitor_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #2196F3;
-                color: white;
-                padding: 8px 16px;
-                border: none;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #0b7dda;
-            }
-            QPushButton:pressed {
-                background-color: #0a5c8a;
-            }
-        """)
-        self.monitor_btn.clicked.connect(self.toggle_monitoring)
-        self.monitor_btn.setEnabled(False)
-        layout.addWidget(self.monitor_btn)
-
-        # 刷新按钮
-        refresh_btn = QPushButton("单次刷新")
-        refresh_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #FF9800;
-                color: white;
-                padding: 8px 16px;
-                border: none;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #e68900;
-            }
-        """)
-        refresh_btn.clicked.connect(self.single_refresh)
-        refresh_btn.setEnabled(False)
-        self.refresh_btn = refresh_btn
-        layout.addWidget(refresh_btn)
-
-        # 清除按钮
-        clear_btn = QPushButton("清除数据")
-        clear_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #f44336;
-                color: white;
-                padding: 8px 16px;
-                border: none;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #da190b;
-            }
-        """)
-        clear_btn.clicked.connect(self.clear_data)
-        layout.addWidget(clear_btn)
-
-        # PLC IP显示
-        self.ip_label = QLabel("PLC: 192.168.0.1")
-        self.ip_label.setStyleSheet("color: #888; padding: 8px;")
-        layout.addWidget(self.ip_label)
-
-        layout.addStretch()
-        group.setLayout(layout)
-        return group
-
-    def create_stats_panel(self):
-        """创建统计信息面板"""
-        group = QGroupBox("统计信息")
-        layout = QHBoxLayout()
-
-        self.stats_labels = {}
-
-        stats_config = [
-            ('total', '总点数', '#2196F3'),
-            ('success', '读取成功', '#4CAF50'),
-            ('failed', '读取失败', '#f44336'),
-            ('real_count', 'REAL类型', '#FF9800'),
-            ('bool_count', 'BOOL类型', '#9C27B0')
-        ]
-
-        for key, label, color in stats_config:
-            stat_label = QLabel(f"{label}: 0")
-            stat_label.setStyleSheet(f"""
-                QLabel {{
-                    background-color: {color};
-                    color: white;
-                    padding: 8px 16px;
-                    border-radius: 4px;
-                    font-weight: bold;
-                    min-width: 100px;
-                }}
-            """)
-            layout.addWidget(stat_label)
-            self.stats_labels[key] = stat_label
-
-        layout.addStretch()
-        group.setLayout(layout)
-        return group
-
-    def load_point_table(self):
-        """加载点位表"""
+    def _load_config(self):
+        path = PROJECT_ROOT / "config" / "batch_config.yaml"
         try:
-            df = pd.read_excel(PROJECT_ROOT / 'data' / '点位表.xlsx')
+            with open(path, "r", encoding="utf-8") as f:
+                self.config = yaml.safe_load(f) or {}
+        except Exception:
+            self.config = {}
 
-            for idx, row in df.iterrows():
-                name = str(row.iloc[0]) if pd.notna(row.iloc[0]) else ""
-                addr = str(row.iloc[1]) if pd.notna(row.iloc[1]) else ""
-                dtype = str(row.iloc[2]) if pd.notna(row.iloc[2]) else ""
+    @property
+    def _plc_ip(self) -> str:
+        return self.config.get("plc", {}).get("ip_address", "192.168.0.1")
 
-                if not addr or addr == "nan" or addr == "NaN":
-                    continue
+    @property
+    def _rack(self) -> int:
+        return self.config.get("plc", {}).get("rack", 0)
 
-                try:
-                    point = PointInfo.from_address(name, addr, dtype)
-                    self.points.append(point)
-                except:
-                    pass
+    @property
+    def _slot(self) -> int:
+        return self.config.get("plc", {}).get("slot", 1)
 
-            # 填充表格
-            self.table.setRowCount(len(self.points))
-            for idx, point in enumerate(self.points):
-                self.set_row_data(idx, point)
+    @property
+    def _default_interval(self) -> float:
+        return self.config.get("reading", {}).get("refresh_interval", 1.0)
 
-            # 更新统计
-            self.stats['total'] = len(self.points)
-            self.stats['real_count'] = sum(1 for p in self.points if p.data_type == 'REAL')
-            self.stats['bool_count'] = sum(1 for p in self.points if p.data_type == 'BOOL')
-            self.update_stats_display()
-
-            self.status_bar.showMessage(f"已加载 {len(self.points)} 个点位")
-
+    def _load_points(self):
+        path = PROJECT_ROOT / "data" / "point_table.xlsx"
+        try:
+            df = pd.read_excel(path)
         except Exception as e:
-            self.status_bar.showMessage(f"加载点位表失败: {e}")
-
-    def set_row_data(self, idx: int, point: PointInfo, value=None):
-        """设置表格行数据"""
-        # 序号
-        item0 = QTableWidgetItem(str(idx + 1))
-        item0.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.table.setItem(idx, 0, item0)
-
-        # 点位名称
-        item1 = QTableWidgetItem(point.name)
-        self.table.setItem(idx, 1, item1)
-
-        # 地址
-        addr = f"DB{point.db_number}.{point.byte_offset}.{point.bit_offset}"
-        item2 = QTableWidgetItem(addr)
-        item2.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.table.setItem(idx, 2, item2)
-
-        # 数据类型
-        item3 = QTableWidgetItem(point.data_type)
-        item3.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.table.setItem(idx, 3, item3)
-
-        # 当前值
-        if value is not None:
-            item4 = QTableWidgetItem(str(value))
-            if point.data_type == "BOOL":
-                if value:
-                    item4.setBackground(QColor(76, 175, 80))
-                    item4.setForeground(QColor(255, 255, 255))
-                else:
-                    item4.setBackground(QColor(158, 158, 158))
-                    item4.setForeground(QColor(255, 255, 255))
-            else:
-                item4.setBackground(QColor(33, 150, 243))
-                item4.setForeground(QColor(255, 255, 255))
-        else:
-            item4 = QTableWidgetItem("--")
-            item4.setForeground(QColor(100, 100, 100))
-
-        item4.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.table.setItem(idx, 4, item4)
-
-    def toggle_connection(self):
-        """切换连接状态"""
-        if not self.is_connected:
-            self.connect_to_plc()
-        else:
-            self.disconnect_from_plc()
-
-    def connect_to_plc(self):
-        """连接到PLC"""
-        try:
-            self.client.connect("192.168.0.1", 0, 1)
-            self.is_connected = True
-            self.connect_btn.setText("断开连接")
-            self.connect_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #f44336;
-                    color: white;
-                    padding: 8px 16px;
-                    border: none;
-                    border-radius: 4px;
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: #da190b;
-                }
-            """)
-            self.monitor_btn.setEnabled(True)
-            self.refresh_btn.setEnabled(True)
-            self.status_bar.showMessage("✅ PLC连接成功")
-        except Exception as e:
-            self.status_bar.showMessage(f"❌ 连接失败: {e}")
-
-    def disconnect_from_plc(self):
-        """断开PLC连接"""
-        self.timer.stop()
-        self.is_monitoring = False
-        self.monitor_btn.setText("开始监控")
-
-        try:
-            self.client.disconnect()
-        except:
-            pass
-
-        self.is_connected = False
-        self.connect_btn.setText("连接PLC")
-        self.connect_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50;
-                color: white;
-                padding: 8px 16px;
-                border: none;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
-        """)
-        self.monitor_btn.setEnabled(False)
-        self.refresh_btn.setEnabled(False)
-        self.status_bar.showMessage("已断开连接")
-
-    def toggle_monitoring(self):
-        """切换监控状态"""
-        if not self.is_monitoring:
-            self.is_monitoring = True
-            self.monitor_btn.setText("停止监控")
-            self.timer.start(1000)  # 1秒刷新一次
-            self.status_bar.showMessage("🔍 开始监控...")
-        else:
-            self.is_monitoring = False
-            self.monitor_btn.setText("开始监控")
-            self.timer.stop()
-            self.status_bar.showMessage("⏸ 停止监控")
-
-    def single_refresh(self):
-        """单次刷新"""
-        self.update_data()
-
-    def update_data(self):
-        """更新数据"""
-        if not self.is_connected:
+            QMessageBox.critical(None, "错误", f"无法加载点位表:\n{e}")
             return
 
-        success_count = 0
-        failed_count = 0
-
-        # 按DB块分组
-        db_groups = {}
-        for point in self.points:
-            if point.db_number not in db_groups:
-                db_groups[point.db_number] = []
-            db_groups[point.db_number].append(point)
-
-        # 读取数据
-        for db_num, points in db_groups.items():
-            max_offset = max(p.byte_offset + p.size for p in points)
-
+        for _, row in df.iterrows():
+            name = str(row.iloc[0]) if pd.notna(row.iloc[0]) else ""
+            addr = str(row.iloc[1]) if pd.notna(row.iloc[1]) else ""
+            dtype = str(row.iloc[2]) if pd.notna(row.iloc[2]) else ""
+            if not addr or addr.lower() == "nan":
+                continue
             try:
-                raw_data = self.client.db_read(db_num, 0, max_offset)
+                pt = PointInfo.from_address(name, addr, dtype)
+                self.points.append(pt)
+                self.db_groups.setdefault(pt.db_number, []).append(pt)
+            except Exception:
+                pass
 
-                for point in points:
-                    try:
-                        if point.data_type == "REAL":
-                            value = get_real(raw_data, point.byte_offset)
-                        elif point.data_type == "BOOL":
-                            value = get_bool(raw_data, point.byte_offset, point.bit_offset)
-                        elif point.data_type == "INT":
-                            value = get_int(raw_data, point.byte_offset)
-                        elif point.data_type == "DINT":
-                            value = get_dint(raw_data, point.byte_offset)
-                        else:
-                            value = None
+        logger.info(f"加载 {len(self.points)} 个点位, {len(self.db_groups)} 个DB块")
 
-                        # 更新表格
-                        idx = self.points.index(point)
-                        self.set_row_data(idx, point, value)
-                        self.data_cache[point.name] = value
-                        success_count += 1
+    # ---- UI construction ----
 
-                    except Exception as e:
-                        failed_count += 1
-                        logger.debug(f"读取失败 {point.name}: {e}")
+    def _build_ui(self):
+        self.setWindowTitle("PLC点位监控")
+        self.setGeometry(100, 100, 1200, 800)
 
-            except Exception as e:
-                logger.debug(f"读取DB{db_num}失败: {e}")
-                for point in points:
-                    failed_count += 1
+        root = QWidget()
+        self.setCentralWidget(root)
+        vbox = QVBoxLayout(root)
+        vbox.setContentsMargins(8, 8, 8, 8)
+        vbox.setSpacing(6)
 
-        # 更新统计
-        self.stats['success'] = success_count
-        self.stats['failed'] = failed_count
-        self.update_stats_display()
+        vbox.addWidget(self._build_toolbar())
 
-        self.status_bar.showMessage(f"✅ 更新完成 | 成功: {success_count} 失败: {failed_count}")
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.addWidget(self._build_db_panel())
+        splitter.addWidget(self._build_table())
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([200, 1000])
+        vbox.addWidget(splitter, 1)
 
-    def update_stats_display(self):
-        """更新统计显示"""
-        self.stats_labels['total'].setText(f"总点数: {self.stats['total']}")
-        self.stats_labels['success'].setText(f"读取成功: {self.stats['success']}")
-        self.stats_labels['failed'].setText(f"读取失败: {self.stats['failed']}")
-        self.stats_labels['real_count'].setText(f"REAL类型: {self.stats['real_count']}")
-        self.stats_labels['bool_count'].setText(f"BOOL类型: {self.stats['bool_count']}")
+        self.status = QStatusBar()
+        self.setStatusBar(self.status)
+        self.status.showMessage(f"就绪 | 已加载 {len(self.points)} 个点位")
 
-    def clear_data(self):
-        """清除数据显示"""
-        for idx, point in enumerate(self.points):
-            self.set_row_data(idx, point, None)
+    def _build_toolbar(self) -> QWidget:
+        bar = QWidget()
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
 
-        self.stats['success'] = 0
-        self.stats['failed'] = 0
-        self.update_stats_display()
-        self.status_bar.showMessage("已清除数据")
+        self.led = QLabel("●")
+        self.led.setFixedWidth(20)
+        self.led.setStyleSheet("color: #f44336; font-size: 18px; font-weight: bold;")
+        row.addWidget(self.led)
+
+        self.btn_connect = QPushButton("连接")
+        self.btn_connect.setStyleSheet(BTN_GREEN)
+        self.btn_connect.clicked.connect(self._on_connect)
+        row.addWidget(self.btn_connect)
+
+        self._sep(row)
+
+        self.btn_monitor = QPushButton("开始监控")
+        self.btn_monitor.setStyleSheet(BTN_BLUE)
+        self.btn_monitor.clicked.connect(self._on_monitor)
+        self.btn_monitor.setEnabled(False)
+        row.addWidget(self.btn_monitor)
+
+        row.addWidget(QLabel("间隔:"))
+        self.spin_interval = QDoubleSpinBox()
+        self.spin_interval.setRange(0.5, 10.0)
+        self.spin_interval.setValue(self._default_interval)
+        self.spin_interval.setSingleStep(0.5)
+        self.spin_interval.setSuffix(" 秒")
+        self.spin_interval.setFixedWidth(90)
+        row.addWidget(self.spin_interval)
+
+        self._sep(row)
+
+        self.btn_refresh = QPushButton("单次刷新")
+        self.btn_refresh.setStyleSheet(BTN_ORANGE)
+        self.btn_refresh.clicked.connect(self._on_refresh)
+        self.btn_refresh.setEnabled(False)
+        row.addWidget(self.btn_refresh)
+
+        row.addStretch()
+
+        ip_lbl = QLabel(f"PLC: {self._plc_ip}")
+        ip_lbl.setStyleSheet("color: #666;")
+        row.addWidget(ip_lbl)
+
+        return bar
+
+    @staticmethod
+    def _sep(layout):
+        s = QFrame()
+        s.setFrameShape(QFrame.VLine)
+        s.setStyleSheet("color: #ccc;")
+        layout.addWidget(s)
+
+    def _build_db_panel(self) -> QWidget:
+        w = QWidget()
+        vbox = QVBoxLayout(w)
+        vbox.setContentsMargins(0, 0, 0, 0)
+
+        lbl = QLabel("DB块列表")
+        lbl.setStyleSheet("font-weight: bold; padding: 4px; font-size: 13px;")
+        vbox.addWidget(lbl)
+
+        self.db_list = QListWidget()
+        item_all = QListWidgetItem(f"全部 ({len(self.points)})")
+        item_all.setData(Qt.UserRole, None)
+        self.db_list.addItem(item_all)
+
+        for db in sorted(self.db_groups):
+            cnt = len(self.db_groups[db])
+            it = QListWidgetItem(f"DB{db} ({cnt})")
+            it.setData(Qt.UserRole, db)
+            self.db_list.addItem(it)
+
+        self.db_list.setCurrentRow(0)
+        self.db_list.currentItemChanged.connect(self._on_db_changed)
+        vbox.addWidget(self.db_list)
+        return w
+
+    def _build_table(self) -> QWidget:
+        w = QWidget()
+        vbox = QVBoxLayout(w)
+        vbox.setContentsMargins(0, 0, 0, 0)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(6)
+        self.table.setHorizontalHeaderLabels(
+            ["序号", "点位名称", "地址", "数据类型", "当前值", "变化"]
+        )
+        self.table.setAlternatingRowColors(True)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+
+        hdr = self.table.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(1, QHeaderView.Stretch)
+        for c in (2, 3, 4, 5):
+            hdr.setSectionResizeMode(c, QHeaderView.ResizeToContents)
+        self.table.verticalHeader().setDefaultSectionSize(28)
+
+        self._fill_table()
+        vbox.addWidget(self.table)
+        return w
+
+    # ---- table helpers ----
+
+    def _visible_points(self) -> List[PointInfo]:
+        if self.selected_db is None:
+            return self.points
+        return self.db_groups.get(self.selected_db, [])
+
+    def _fill_table(self):
+        pts = self._visible_points()
+        self.table.setRowCount(len(pts))
+        for i, p in enumerate(pts):
+            self._write_row(i, p)
+
+    def _write_row(self, row: int, pt: PointInfo, value=None, prev=None):
+        self.table.setItem(row, 0, self._ci(str(row + 1)))
+        self.table.setItem(row, 1, QTableWidgetItem(pt.name))
+        self.table.setItem(row, 2, self._ci(pt.address))
+        self.table.setItem(row, 3, self._ci(pt.data_type))
+
+        # value
+        if value is not None:
+            vi = self._ci(str(value))
+            if pt.data_type == "BOOL":
+                vi.setBackground(QColor(76, 175, 80) if value else QColor(100, 100, 100))
+                vi.setForeground(QColor(255, 255, 255))
+            else:
+                vi.setForeground(QColor(230, 230, 230))
+        else:
+            vi = self._ci("--")
+            vi.setForeground(QColor(100, 100, 100))
+        self.table.setItem(row, 4, vi)
+
+        # change
+        ci = self._ci("")
+        if value is not None and prev is not None:
+            try:
+                if pt.data_type == "BOOL":
+                    if value != prev:
+                        ci.setText("●")
+                        ci.setForeground(QColor(255, 193, 7))
+                elif isinstance(value, (int, float)) and isinstance(prev, (int, float)):
+                    d = value - prev
+                    if d > 0:
+                        ci.setText(f"↑+{d:.3g}")
+                        ci.setForeground(QColor(76, 175, 80))
+                    elif d < 0:
+                        ci.setText(f"↓{d:.3g}")
+                        ci.setForeground(QColor(244, 67, 54))
+            except (TypeError, ValueError):
+                pass
+        self.table.setItem(row, 5, ci)
+
+    def _ci(self, text: str) -> QTableWidgetItem:
+        it = QTableWidgetItem(text)
+        it.setTextAlignment(Qt.AlignCenter)
+        return it
+
+    def _flash_row(self, row: int, color: QColor):
+        for c in range(self.table.columnCount()):
+            it = self.table.item(row, c)
+            if it:
+                it.setBackground(color)
+        if row in self._flash_timers:
+            self._flash_timers[row].stop()
+        t = QTimer(self)
+        t.setSingleShot(True)
+        t.timeout.connect(lambda r=row: self._unflash(r))
+        t.start(FLASH_MS)
+        self._flash_timers[row] = t
+
+    def _unflash(self, row: int):
+        for c in range(self.table.columnCount()):
+            it = self.table.item(row, c)
+            if it:
+                it.setBackground(CLR_CLEAR)
+
+    # ---- UI state ----
+
+    def _set_connected(self, connected: bool):
+        self.is_connected = connected
+        if connected:
+            self.btn_connect.setText("断开")
+            self.btn_connect.setStyleSheet(BTN_RED)
+            self.led.setStyleSheet("color: #4CAF50; font-size: 18px; font-weight: bold;")
+            self.btn_monitor.setEnabled(True)
+            self.btn_refresh.setEnabled(True)
+        else:
+            self.btn_connect.setText("连接")
+            self.btn_connect.setStyleSheet(BTN_GREEN)
+            self.led.setStyleSheet("color: #f44336; font-size: 18px;")
+            self.btn_monitor.setEnabled(False)
+            self.btn_refresh.setEnabled(False)
+
+    def _set_monitoring(self, on: bool):
+        self.is_monitoring = on
+        if on:
+            self.btn_monitor.setText("停止监控")
+            self.btn_monitor.setStyleSheet(BTN_RED)
+            self.btn_refresh.setEnabled(False)
+            self.btn_connect.setEnabled(False)
+            self.spin_interval.setEnabled(False)
+        else:
+            self.btn_monitor.setText("开始监控")
+            self.btn_monitor.setStyleSheet(BTN_BLUE)
+            if self.is_connected:
+                self.btn_refresh.setEnabled(True)
+                self.btn_connect.setEnabled(True)
+            self.spin_interval.setEnabled(True)
+
+    # ---- actions ----
+
+    def _on_connect(self):
+        if self.is_connected:
+            self._do_disconnect()
+        else:
+            self._do_connect()
+
+    def _do_connect(self):
+        self.btn_connect.setEnabled(False)
+        self.status.showMessage("正在连接...")
+        self._connect_tester = _ConnectTester(self._plc_ip, self._rack, self._slot)
+        self._connect_tester.result.connect(self._on_connect_result)
+        self._connect_tester.start()
+
+    def _on_connect_result(self, ok: bool, msg: str):
+        self._set_connected(ok)
+        if not ok:
+            QMessageBox.warning(self, "连接失败", msg)
+        self.status.showMessage(msg)
+
+    def _do_disconnect(self):
+        self._stop_monitor()
+        self._set_connected(False)
+        self.status.showMessage("已断开连接")
+
+    def _on_monitor(self):
+        if self.is_monitoring:
+            self._stop_monitor()
+        else:
+            self._start_monitor()
+
+    def _start_monitor(self):
+        self._set_monitoring(True)
+        self.status.showMessage("开始监控...")
+        self.reader = PLCReader(
+            self._plc_ip, self._rack, self._slot,
+            self.points, self.spin_interval.value(),
+        )
+        self.reader.data_ready.connect(self._on_data)
+        self.reader.connection_status.connect(self._on_reader_conn)
+        self.reader.start()
+
+    def _stop_monitor(self):
+        if self.reader:
+            self.reader.stop()
+            self.reader.wait(3000)
+            self.reader = None
+        self._set_monitoring(False)
+
+    def _on_reader_conn(self, ok: bool, msg: str):
+        if not ok and self.is_monitoring:
+            self._stop_monitor()
+            self._set_connected(False)
+            self.status.showMessage(f"PLC连接断开: {msg}")
+
+    def _on_refresh(self):
+        self.btn_refresh.setEnabled(False)
+        self.status.showMessage("刷新中...")
+        self._single_reader = PLCReader(
+            self._plc_ip, self._rack, self._slot,
+            self.points, single_shot=True,
+        )
+        self._single_reader.data_ready.connect(self._on_data)
+        self._single_reader.finished.connect(self._on_single_done)
+        self._single_reader.start()
+
+    def _on_single_done(self):
+        self.btn_refresh.setEnabled(True)
+
+    # ---- data handling ----
+
+    def _on_data(self, results: dict, ok: int, fail: int):
+        pts = self._visible_points()
+        for i, pt in enumerate(pts):
+            val = results.get(pt.db_number, {}).get(pt.name)
+            prev = self.prev_values.get(pt.name)
+
+            self._write_row(i, pt, val, prev)
+
+            if val is not None and prev is not None:
+                try:
+                    if isinstance(val, (int, float)) and isinstance(prev, (int, float)):
+                        if val > prev:
+                            self._flash_row(i, CLR_UP)
+                        elif val < prev:
+                            self._flash_row(i, CLR_DOWN)
+                except (TypeError, ValueError):
+                    pass
+            elif val is None and self.prev_values:
+                self._flash_row(i, CLR_FAIL)
+
+            self.prev_values[pt.name] = val
+
+        now = datetime.now().strftime("%H:%M:%S")
+        self.status.showMessage(f"成功: {ok}  失败: {fail}  |  {now}")
+
+    def _on_db_changed(self, current, _prev):
+        if not current:
+            return
+        self.selected_db = current.data(Qt.UserRole)
+        self._fill_table()
+        pts = self._visible_points()
+        for i, pt in enumerate(pts):
+            val = self.prev_values.get(pt.name)
+            self._write_row(i, pt, val)
+
+    # ---- cleanup ----
 
     def closeEvent(self, event):
-        """窗口关闭事件"""
-        if self.is_connected:
-            try:
-                self.client.disconnect()
-            except:
-                pass
+        if self.reader and self.reader.isRunning():
+            self.reader.stop()
+            self.reader.wait(3000)
         event.accept()
 
 
+# ---------------------------------------------------------------------------
+#  Entry
+# ---------------------------------------------------------------------------
+
 def main():
     app = QApplication(sys.argv)
-
-    # 设置应用样式
-    app.setStyle('Fusion')
-
-    window = PointTableMonitor()
-    window.show()
-
+    app.setStyle("Fusion")
+    win = PointTableMonitor()
+    win.show()
     sys.exit(app.exec())
 
 

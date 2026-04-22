@@ -6,7 +6,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 # 读取Excel文件
-df = pd.read_excel(PROJECT_ROOT / 'data' / '点位表.xlsx')
+df = pd.read_excel(PROJECT_ROOT / 'data' / 'point_table.xlsx')
 
 print("=" * 60)
 print("点位表内容:")

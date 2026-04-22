@@ -256,7 +256,7 @@ def main():
 
     # 创建读取器
     reader = PointTableReader(
-        excel_file=str(PROJECT_ROOT / "data" / "点位表.xlsx"),
+        excel_file=str(PROJECT_ROOT / "data" / "point_table.xlsx"),
         plc_ip="192.168.0.1",  # 修改为实际PLC IP
         rack=0,
         slot=1
